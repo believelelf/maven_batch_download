@@ -15,21 +15,21 @@ public class MavenBatchDownloadApp {
 
     private static final String CONTENT_TYPE = "text/html" ;
 
-    public static final Pattern LINK_PATTERN = Pattern.compile("<a href=\"(.*)\"\\s+title=");
+    private static final Pattern LINK_PATTERN = Pattern.compile("<a href=\"(.*)\"\\s+title=");
 
-    public static final String DIR_SUFFIX = "/";
+    private static final String DIR_SUFFIX = "/";
 
-    public static final String POM_SUFFIX = ".pom";
+    private static final String POM_SUFFIX = ".pom";
 
-    public static final String SOURCE_SUFFIX = "-sources.jar";
+    private static final String SOURCE_SUFFIX = "-sources.jar";
 
-    public static final String JAVADOC_SUFFIX = "-javadoc.jar";
+    private static final String JAVADOC_SUFFIX = "-javadoc.jar";
 
-    public static final String JAR_SUFFIX = ".jar";
+    private static final String JAR_SUFFIX = ".jar";
 
-    public static final boolean DOWNLOAD_SOURCES = true;
+    private static final boolean DOWNLOAD_SOURCES = true;
 
-    public static final boolean DOWNLOAD_JAVADOC = false;
+    private static final boolean DOWNLOAD_JAVADOC = false;
 
     private static final String DOWNLOAD_URL = "http://central.maven.org/maven2/abbot/";
 
@@ -38,11 +38,19 @@ public class MavenBatchDownloadApp {
 
     }
 
-    private static Map<String, Object> genDownloadMap(String baseURL, String downloadURL){
+    private static Map<String, Object> scanResources(){
+        Map<String, Object> baseMap = new LinkedHashMap<String, Object>();
+        Map<String, Object> downloadMap = genDownloadMap(baseMap, BASE_URL, DOWNLOAD_URL);
+        //TODO to implement scan maven resources
+
+        return baseMap;
+    }
+
+
+    private static Map<String, Object> genDownloadMap(Map<String, Object> baseMap, String baseURL, String downloadURL){
         if(baseURL.equals(downloadURL)){
-            return new LinkedHashMap<String, Object>();
+            return baseMap;
         }else{
-            Map<String, Object> baseMap = new LinkedHashMap<String, Object>();
             String [] paths = downloadURL.substring(baseURL.length()).split("/");
             Map<String, Object> nowMap = baseMap;
             for(String path : paths){
@@ -50,8 +58,10 @@ public class MavenBatchDownloadApp {
                 nowMap.put(path, newMap);
                 nowMap = newMap;
             }
-            return baseMap;
+            return nowMap;
         }
     }
+
+
 
 }
