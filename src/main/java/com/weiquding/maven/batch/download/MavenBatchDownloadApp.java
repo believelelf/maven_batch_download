@@ -143,8 +143,8 @@ public class MavenBatchDownloadApp {
 
     private static void submitTask(ExecutorService executorService, String downloadURL, String path){
         if (path.endsWith(POM_SUFFIX) || path.endsWith(JAR_SUFFIX)){
-            if(!DOWNLOAD_JAVADOC && path.equals(JAVADOC_SUFFIX)
-                    || !DOWNLOAD_SOURCES && path.equals(SOURCE_SUFFIX) ){
+            if(!DOWNLOAD_JAVADOC && path.endsWith(JAVADOC_SUFFIX)
+                    || !DOWNLOAD_SOURCES && path.endsWith(SOURCE_SUFFIX) ){
                 return;
             }
             String parentPath = downloadURL.substring(BASE_URL.length());
