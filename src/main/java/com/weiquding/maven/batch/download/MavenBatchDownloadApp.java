@@ -11,10 +11,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -45,7 +42,7 @@ public class MavenBatchDownloadApp {
 
     private static final String CN_BASE_URL = "https://maven.aliyun.com/repository/public/";
 
-    private static final String BASE_DIR = "E:\\maven_central\\";
+    private static final String BASE_DIR = "F:\\maven_central\\";
 
     private static final boolean DOWNLOAD_SOURCES = true;
 
@@ -53,31 +50,15 @@ public class MavenBatchDownloadApp {
 
     private static final String DOWNLOAD_URL = "http://central.maven.org/maven2/";
 
-    private static final OkHttpClient client = new OkHttpClient();
-
 
     public static void main(String[] args) {
 
         long time = System.currentTimeMillis();
 
-        Map<String, Object> rootMap = scanResources(BASE_URL, DOWNLOAD_URL);
-
-        if(logger.isInfoEnabled()){
-            logger.info("scanResources end===> use time[{}]\r\n---------------------------------------------"
-                    , System.currentTimeMillis() - time);
-        }
-
-        // download jar/pom from aliyun maven repo really
-        List<Callable<Boolean>> tasks = addTasks(rootMap, CN_BASE_URL);
-
-        time = System.currentTimeMillis();
-
-        if(logger.isInfoEnabled()){
-            logger.info("download resources starting===> current time[{}]\r\n---------------------------------------------"
-                    , new Date());
-        }
-
-        invokeTasks(tasks);
+        ExecutorService executorService = Executors
+                .newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2);
+        requestURL(executorService, DOWNLOAD_URL);
+        executorService.shutdown();
 
         if(logger.isInfoEnabled()){
             logger.info("download resources end===> use time[{}]", System.currentTimeMillis() - time);
@@ -85,82 +66,39 @@ public class MavenBatchDownloadApp {
 
     }
 
-    private static void invokeTasks(List<Callable<Boolean>> tasks){
-        ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * 2);
-        try {
-            final List<Future<Boolean>> futures = executorService.invokeAll(tasks);
-        } catch (InterruptedException e) {
-           logger.error("An error occurred when invoking all tasks");
-        }
-        executorService.shutdown();
 
-    }
-
-    private static List<Callable<Boolean>> addTasks(Map<String,Object> rootMap, String baseURL){
-        List<Callable<Boolean>> tasks = new ArrayList<>();
-        addTask(tasks, rootMap, baseURL);
-        return tasks;
-    }
-
-    private static void addTask(List<Callable<Boolean>> tasks, Map<String,Object> rootMap, String baseURL) {
-        for(Map.Entry<String, Object> entry: rootMap.entrySet()){
-            String key = entry.getKey();
-            Object value = entry.getValue();
-            String url = baseURL + key;
-            if(value instanceof Map){
-                addTask(tasks, (Map)value, url + "/");
-            }else if (key.endsWith(POM_SUFFIX) || key.endsWith(JAR_SUFFIX)){
-                String filePath = BASE_DIR + url.substring(CN_BASE_URL.length()).replace("/", File.separator);
-                logger.debug("add task ===>url::[{}] filePath::[{}]", url, filePath);
-                tasks.add(new DownloadTask(url, filePath));
-            }
-        }
-    }
-
-    private static Map<String, Object> scanResources(String baseURL, String downloadURL){
-        // maven repository root path
-        Map<String, Object> rootMap = new LinkedHashMap<String, Object>();
-        // download path
-        Map<String, Object> downloadMap = genDownloadMap(rootMap, baseURL, downloadURL);
-        // request downloadURL
-        requestURL(downloadMap, downloadURL);
-
-        return rootMap;
-    }
-
-    private static void requestURL(Map<String,Object> downloadMap, String downloadURL) {
+    private static void requestURL(ExecutorService executorService, String downloadURL) {
         String content = requestHtml(downloadURL);
         if(content != null){
             List<String> paths = resolveContent(content, LINK_PATTERN);
+            List<String> dirs = new ArrayList<>();
             for(String path : paths){
                 if(path.endsWith(DIR_SUFFIX)){
-                    Map<String, Object> nowMap = new LinkedHashMap<>();
-                    downloadMap.put(path.substring(0,(path.length()-1)), nowMap);
-                    requestURL(nowMap, downloadURL + path);
-                }else if(path.endsWith(POM_SUFFIX)){
-                    downloadMap.put(path, null);
-                }else if(path.endsWith(JAVADOC_SUFFIX) && DOWNLOAD_JAVADOC){
-                    downloadMap.put(path, null);
-                }else if(path.endsWith(SOURCE_SUFFIX) && DOWNLOAD_SOURCES){
-                    downloadMap.put(path, null);
-                }else if(path.endsWith(JAR_SUFFIX) && !path.endsWith(JAVADOC_SUFFIX) && !path.endsWith(SOURCE_SUFFIX)){
-                    downloadMap.put(path, null);
+                    dirs.add(downloadURL + path);
+                }else{
+                    submitTask(executorService, downloadURL, path);
                 }
             }
-        }
-    }
-
-    private static List<String> resolveContent(String content, Pattern linkPattern){
-        Matcher matcher = linkPattern.matcher(content);
-        List<String> paths = new ArrayList<String>();
-        while (matcher.find()){
-            String path = matcher.group(1);
-            logger.debug("current path==>[{}]", path);
-            if(path.endsWith(DIR_SUFFIX) || path.endsWith(POM_SUFFIX) || path.endsWith(JAR_SUFFIX)){
-                paths.add(path);
+            if (dirs.isEmpty()){
+                return;
+            }
+            List<Callable<List<String>>> callables = new ArrayList<>();
+            for(String url : dirs){
+                callables.add(new DownloadHtmlTask(executorService, url));
+            }
+            List<String> urls = new ArrayList<>();
+            try {
+                List<Future<List<String>>> futures = executorService.invokeAll(callables);
+                for(Future<List<String >> future : futures){
+                    urls.addAll(future.get());
+                }
+            } catch (InterruptedException | ExecutionException e) {
+                logger.error("An error occurred when invoking [{}] from maven repo", downloadURL, e);
+            }
+            for (String url : urls){
+                requestURL(executorService, url);
             }
         }
-        return paths;
     }
 
     /**
@@ -176,6 +114,7 @@ public class MavenBatchDownloadApp {
                 .url(url)
                 .build();
         try {
+            OkHttpClient client = bulidOKHttpClient();
             Response response = client.newCall(request).execute();
             String content = response.body().string();
             if(logger.isDebugEnabled()){
@@ -183,36 +122,82 @@ public class MavenBatchDownloadApp {
             }
             return content;
         } catch (IOException e) {
-            logger.error("An error occurred when requesting resource from maven repo", e);
+            logger.error("An error occurred when requesting [{}] from maven repo", url, e);
         }
         return null;
     }
 
-
-
-
-    private static Map<String, Object> genDownloadMap(Map<String, Object> rootMap, String baseURL, String downloadURL){
-        if(baseURL.equals(downloadURL)){
-            return rootMap;
-        }else{
-            String [] paths = downloadURL.substring(baseURL.length()).split("/");
-            Map<String, Object> nowMap = rootMap;
-            for(String path : paths){
-                Map<String,Object> newMap = new LinkedHashMap<String,Object>();
-                nowMap.put(path, newMap);
-                nowMap = newMap;
+    private static List<String> resolveContent(String content, Pattern linkPattern){
+        Matcher matcher = linkPattern.matcher(content);
+        List<String> paths = new ArrayList<String>();
+        while (matcher.find()){
+            String path = matcher.group(1);
+            logger.debug("current path==>[{}]", path);
+            if(path.endsWith(DIR_SUFFIX) || path.endsWith(POM_SUFFIX) || path.endsWith(JAR_SUFFIX)){
+                paths.add(path);
             }
-            return nowMap;
+        }
+        return paths;
+    }
+
+
+    private static void submitTask(ExecutorService executorService, String downloadURL, String path){
+        if (path.endsWith(POM_SUFFIX) || path.endsWith(JAR_SUFFIX)){
+            if(!DOWNLOAD_JAVADOC && path.equals(JAVADOC_SUFFIX)
+                    || !DOWNLOAD_SOURCES && path.equals(SOURCE_SUFFIX) ){
+                return;
+            }
+            String parentPath = downloadURL.substring(BASE_URL.length());
+            String filePath = BASE_DIR + parentPath.replace("/", File.separator) + path;
+            String url = CN_BASE_URL + parentPath + path;
+            logger.debug("add task ===>url::[{}] filePath::[{}]", url, filePath);
+            executorService.submit(new DownloadJarTask(url, filePath));
+        }
+    }
+
+    private static OkHttpClient bulidOKHttpClient(){
+        OkHttpClient client = new OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .writeTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(300, TimeUnit.SECONDS)
+                .build();
+        return  client;
+    }
+
+
+    private static class DownloadHtmlTask implements Callable<List<String>>{
+
+        private String url;
+        private ExecutorService executorService;
+
+        public DownloadHtmlTask(ExecutorService executorService, String url){
+            this.executorService = executorService;
+            this.url = url;
+        }
+
+        @Override
+        public List<String> call() throws Exception {
+            List<String> subURLs = new ArrayList<>();
+            String content = requestHtml(url);
+            List<String> paths = resolveContent(content, LINK_PATTERN);
+            for (String path : paths) {
+                if (path.endsWith(DIR_SUFFIX)) {
+                    subURLs.add(url + path);
+                } else {
+                    submitTask(executorService, url, path);
+                }
+            }
+            return subURLs;
         }
     }
 
 
-    private static class DownloadTask implements Callable<Boolean> {
+    private static class DownloadJarTask implements Callable<Boolean> {
 
         private String url;
         private String filePath;
 
-        public DownloadTask(String url, String filePath) {
+        public DownloadJarTask(String url, String filePath) {
             this.url = url;
             this.filePath = filePath;
         }
@@ -222,16 +207,24 @@ public class MavenBatchDownloadApp {
 
             logger.debug("request jar/pom url ===>[{}]::starting", url);
             long time = System.currentTimeMillis();
-            Request request = new Request.Builder()
-                    .url(url)
-                    .build();
             InputStream inputStream  = null;
             try {
+                File file = new File(filePath);
+                if(file.exists() && file.length() > 0){
+                    if(logger.isDebugEnabled()) {
+                        logger.debug("request jar/pom url ===>[{}]::end==>use time[{}]:: file.exists", url, System.currentTimeMillis() - time);
+                    }
+                    return true;
+                }
+                Request request = new Request.Builder()
+                        .url(url)
+                        .build();
+                OkHttpClient client = bulidOKHttpClient();
                 Response response = client.newCall(request).execute();
                 inputStream  = response.body().byteStream();
                 FileUtils.copyToFile(inputStream, new File(filePath));
             } catch (IOException e) {
-                logger.error("An error occurred when requesting resource from maven repo", e);
+                logger.error("An error occurred when requesting [{}] from maven repo", url, e);
                 return false;
             }finally {
                 if(inputStream != null){
